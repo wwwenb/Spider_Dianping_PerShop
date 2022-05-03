@@ -1,5 +1,5 @@
 tmp/
 *.csv
 *.xlsx
-_pycache_
+__pycache__
 .idea/
