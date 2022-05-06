@@ -13,6 +13,7 @@ from save_file_utils import save_file_utils
 
 class Spider:
     def __init__(self):
+        self.user_ids = []
         self.url = spider_config.url
 
         self.headers = {
@@ -24,6 +25,16 @@ class Spider:
         }
 
         self.result_file = spider_config.result_file
+
+        self.load_user_id()
+
+    def load_user_id(self):
+        if not os.path.exists(spider_config.user_id_file):
+            return
+
+        with open(spider_config.user_id_file, "r", encoding="utf-8") as f:
+            for line in f.readlines():
+                self.user_ids.append(line.strip())
 
     def get_css_content(self, html, url):
         # 获取保存字体信息的css链接
@@ -80,61 +91,107 @@ class Spider:
 
         return font_dict
 
-    def get_review_detail(self, html):
-        reviews_info = []
+    def get_user_rank(self, url):
+        print("爬取个人主页：" + str(url))
+        r = request_utils.get(url, headers=self.headers)
+        page = BeautifulSoup(r.text, "html.parser")
+        save_file_utils.save_message("./tmp/user_info_page.html", r.text)
+
+        user_rank = re.findall('<span title="" class="user-rank-rst urr-rank(.*?)"></span>', str(r.text))
+        result = 0
+        try:
+            result = user_rank[0]
+        except Exception as e:
+            print(e)
+        return result
+
+    def get_review_detail(self, review_url, html):
         page_review = BeautifulSoup(html, "html.parser")
 
-        main_reviews = page_review.find_all("div", classname="main-review")
-        for main_review in main_reviews:
+        main_reviews = page_review.find_all("div", class_="main-review")
+        user_photo_asides = page_review.find_all("a", class_="dper-photo-aside")
+
+        for i, main_review in enumerate(main_reviews):
+            reviews_info = []
+
             # 用户名
-            user_name = main_review.find("div", classname="dper-info").text.strip()
+            user_name = main_review.find("div", class_="dper-info").text.strip()
 
             print("爬取用户: %s 的评论" % user_name)
 
-            # 时间
-            review_time = main_review.find(classname="time")
+            # 用户等级
+            user_rank = 0
+            user_url = ""
+            try:
+                sp = user_photo_asides[i]["href"].split("/")
+                user_id = str(sp[2])
+                if user_id in self.user_ids:
+                    print("已存在，跳过： " + str(user_name) + "\n")
+                    continue
+
+                # time.sleep(4)
+                user_url = "http://%s%s" % (spider_config.host, user_photo_asides[i]["href"])
+                # while str(user_rank) == "0":
+                #     user_rank = self.get_user_rank(user_url)
+                #
+                #     if str(user_rank) == "0":
+                #         print("请前往验证：" + str(user_url) + "\n")
+                #         print("请输入 0 已验证重新抓取 1 不验证继续\n")
+                #         inp = input().strip()
+                #         if inp == "0":
+                #             continue
+                #         elif inp == "1":
+                #             break
+
+                # user_rank = float(user_rank) / 10
+
+                self.user_ids.append(user_id)
+                save_file_utils.save_message(spider_config.user_id_file, user_id + "\n", mode="a")
+            except Exception as e:
+                print(e)
+
+            print("user_rank: " + str(user_rank))
+
+            # 发布时间
+            review_time = main_review.find(class_="time")
             review_time = re.sub("\\s+", " ", review_time.text).strip()
-            sp = review_time.split("-")
 
             # 评论内容
-            review_words = main_review.find("div", classname="review-words Hide")
+            review_words = main_review.find("div", class_="review-words Hide")
             # 评论没有隐藏内容
             if review_words is None:
-                review_words = main_review.find(classname="review-words").text
+                review_words = main_review.find(class_="review-words").text
                 review_words = review_words.strip()
             else:
                 # 删除“收起评论”以及空白字符
                 review_words = review_words.text.strip()[:-4].strip()
 
-            # 评论的长度
-            review_len = len(review_words)
-
-            # 是否提到“霸王餐”或“免费体验”
-            free_trial = 0
-            if "霸王餐" in review_words or "免费体验" in review_words:
-                free_trial = 1
-
-            # 是否为“免费体验后评价”
-            rich_title = main_review.find("div", class_="richtitle")
-            if rich_title is not None and "免费体验后评价" in rich_title:
-                rich_title = 1
-            else:
-                rich_title = 0
-
-            # “喜欢的菜”数量
+            # “喜欢的菜”数量，手机端是推荐的菜
             review_recommend_num = 0
             review_recommend = main_review.find("div", class_="review-recommend")
             if review_recommend is not None:
                 a_recommend = review_recommend.find_all("a")
                 review_recommend_num = len(a_recommend)
 
-            # 评论总打分、分维度评分
+            # 评论总打分
             review_rank = main_review.find("div", class_="review-rank")
             score_star = re.findall('<span class="sml-rank-stars sml-str(.*?) star"></span>', str(review_rank))
             score_star = float(score_star[0]) / 10
-            score_dim = re.sub("\\s+", " ", review_rank.text).strip()
 
-            # 点赞、回应、收藏数
+            # 分维度评分，口味、环境、服务
+            score_dim = [0, 0, 0]
+            review_scores = review_rank.find_all("span", class_="item")
+            for rs in review_scores:
+                rs = re.sub("\\s+", "", rs.text).strip()
+                sp = rs.split("：")
+                if "口味" == sp[0]:
+                    score_dim[0] = float(sp[1])
+                elif "环境" == sp[0]:
+                    score_dim[1] = float(sp[1])
+                elif "服务" == sp[0]:
+                    score_dim[2] = float(sp[1])
+
+            # 点赞、回应、收藏数，手机端分别对应有帮助、评论和收藏
             num_prf = [0, 0, 0]
             actions_contents = main_review.find("span", class_="actions").contents
             i = -1
@@ -158,19 +215,24 @@ class Spider:
                 a_num = review_pictures.find_all("a")
                 picture_num = int(len(a_num))
 
-            reviews_info.append([user_name, review_words, rich_title, free_trial,
-                                 review_recommend_num, score_star, score_dim, review_len,
-                                 picture_num] + num_prf + [review_time])
+            # 评论中”我们”，“我和”，“你”的数量
+            num_keywords = [0, 0, 0]
+            num_keywords[0] = int(review_words.count("我们"))
+            num_keywords[1] = int(review_words.count("我和"))
+            num_keywords[2] = int(review_words.count("你"))
 
-        return reviews_info
+            reviews_info.append([user_name, user_rank, review_time, score_star] + score_dim +
+                                 [review_words, picture_num, review_recommend_num] + num_prf +
+                                num_keywords + [review_url, user_url])
+            save_file_utils.write_csv_rows(spider_config.result_file, reviews_info)
 
     def each_review_page(self, review_url):
-        # self.headers["Referer"] = shop_url
-
         css_link, css_content = None, None
         # 获取css信息失败后，需要在浏览器验证后重新请求
         while css_content is None:
             r = request_utils.get(review_url, headers=self.headers)
+            if r is None:
+                continue
             html = r.text
 
             css_link, css_content = self.get_css_content(html, review_url)
@@ -189,16 +251,11 @@ class Spider:
 
         save_file_utils.save_message("./tmp/page.html", html)
 
-        shop_info = self.get_shop_info(html)
-        reviews_info = self.get_review_detail(html)
-
-        for i, ri in enumerate(reviews_info):
-            reviews_info[i] = shop_info + ri
-
-        save_file_utils.write_csv_rows(self.result_file, reviews_info)
+        self.get_review_detail(review_url, html)
 
     def each_shop_review(self, shop_url):
         all_review_url = "%s/%s" % (shop_url, "review_all")
+        print("爬取：" + str(all_review_url))
 
         r = request_utils.get(all_review_url, headers=self.headers)
         save_file_utils.save_message("./tmp/all_reviews.html", r.text)
@@ -206,39 +263,52 @@ class Spider:
 
         page_count = 0
         page_links = page.find_all("a", {"class": "PageLink"})
-        print(page_links)
 
         # 获取店铺网页的页数
         for p in page_links:
             if str.isdigit(p.text):
                 page_count = page_count if page_count > int(p.text) else int(p.text)
 
-        print("count is: " + str(page_count))
+        print("review page count is: " + str(page_count))
+
+        start_count = 1
+        if os.path.exists(spider_config.start_count_file):
+            with open(spider_config.start_count_file, "r", encoding="utf-8") as f:
+                for line in f.readlines():
+                    start_count = int(line.strip())
+                    break
+
         # 处理每个评论页
-        for i in range(1, page_count):
+        for i in range(start_count, page_count + 1):
             review_url = "%s/%s" % (all_review_url, "p" + str(i))
 
             print("爬取网页: %s" % review_url)
             time.sleep(5 + random.randint(2, 4))
 
             self.each_review_page(review_url)
+            save_file_utils.save_message(spider_config.start_count_file, str(i))
 
     def spider(self):
         self.each_shop_review(self.url)
 
 
 if __name__ == "__main__":
+    os.environ["http_proxy"] = "http://127.0.0.1:10809"
+    os.environ["https_proxy"] = "http://127.0.0.1:10809"
+
     print("是否覆盖结果文件： 0 不覆盖 1 覆盖")
-    # mode = input().strip()
+    mode = input().strip()
 
     if mode == "1" and os.path.exists(spider_config.result_file):
         os.remove(spider_config.result_file)
+        if os.path.exists(spider_config.user_id_file):
+            os.remove(spider_config.user_id_file)
 
         # 在开头写入utf-8编码的bom，防止excel双击打开时乱码
-        csv_titles = ['\ufeff' + "商家名", "商家的总评分", "商家的分维度评分", "商家的人均价格", "商家被评论总数",
-                      "用户名", "每条评论的内容", "该评论是否为“免费体验后评价“", "该评论内容中是否提到“霸王餐”或“免费体验”",
-                      "评论中“喜欢的菜”的数量", "每条评论的总打分", "每条评论的分维度评分", "每条评论的长度",
-                      "每条评论的配图数", "每条评论的点赞数量", "每条评论的回应数量", "每条评论的收藏数量", "评论时间"]
+        csv_titles = ['\ufeff' + "用户id", "用户等级", "发布时间", "打分", "口味评分",
+                      "环境评分", "服务评分", "评论", "图片数量", "推荐菜品数量", "有帮助数量",
+                      "评论数量", "收藏数量", "评论中”我们“的数量", "评论中“我和”的数量",
+                      "评论中“你”的数量", "评论页", "个人主页"]
 
         save_file_utils.write_csv_row(spider_config.result_file, csv_titles)
 

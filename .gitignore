@@ -1,5 +1,7 @@
 tmp/
+*.log
 *.csv
 *.xlsx
 __pycache__
+result/
 .idea/
